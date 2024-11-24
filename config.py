@@ -1,15 +1,16 @@
 import os
+from dotenv import dotenv_values
+
+config = dotenv_values()
 
 app_dir = os.path.abspath(os.path.dirname(__file__))
 
-class BaseConfig:
-    YANDEX_CLOUD_KEY = os.environ.get('YANDEX_CLOUD_KEY') or ''
-    GOOGLE_CLOUD_KEY = os.environ.get('GOOGLE_CLOUD_KEY') or ''
 
-
-class Dev(BaseConfig):
+class Dev:
     DEBUG = True
     PORT = 5555
 
-class Prod(BaseConfig):
-    DEBUG = False
+
+class Prod:
+    DEBUG = True
+    PORT = 5555
