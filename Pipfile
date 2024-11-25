@@ -6,6 +6,7 @@ name = "pypi"
 [packages]
 flask = "3.1.0"
 python-dotenv = "*"
+gunicorn = "*"
 
 [dev-packages]
 
