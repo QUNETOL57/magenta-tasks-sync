@@ -7,4 +7,4 @@ def make_shell_context():
 
 if __name__ == '__main__':
     port = app.config.get('PORT', 5001)
-    app.run(port=port)
+    app.run(host='0.0.0.0', port=port)
