@@ -7,7 +7,7 @@ app_dir = os.path.abspath(os.path.dirname(__file__))
 
 
 class Dev:
-    DEBUG = True
+    DEBUG = False
     PORT = 5555
 
 

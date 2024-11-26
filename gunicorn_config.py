@@ -5,4 +5,4 @@ workers = 3
 accesslog = "app.log"
 
 # Set the log level for access log
-loglevel = "info"
+loglevel = "error"
