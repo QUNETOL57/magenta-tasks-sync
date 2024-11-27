@@ -3,10 +3,16 @@ import logging
 from app import app
 from flask import request, jsonify
 
+from app.services.google_sheets_service import GoogleSheetsService
+from app.task_dto import TaskDTO
 
-@app.route('/yandex/create', methods=['POST'])
-def create_yandex():
-    data = request.get_json()
+gs_service = GoogleSheetsService()
+
+
+# Добавление новой задачи в google sheets
+@app.route('/google/add', methods=['POST'])
+def create():
+    gs_service.add_task(TaskDTO(**request.get_json()))
     return jsonify({"message": "success"}), 200
 
 
