@@ -6,7 +6,7 @@ from flask import Flask, request
 app = Flask(__name__)
 app.config.from_object('config.' + (os.environ.get('FLASK_ENV') or 'Dev'))
 
-logging.basicConfig(level=logging.INFO, filename="app.log", filemode="w",
+logging.basicConfig(level=logging.INFO, filename="logs/app.log", filemode="w",
                     format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%d.%m.%Y %H:%M:%S")
 
 
@@ -22,4 +22,4 @@ def log_response_info(response):
 
 
 with app.app_context():
-    from . import routes
+    from . import routes, task_dto
