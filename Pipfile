@@ -9,6 +9,8 @@ python-dotenv = "*"
 gunicorn = "*"
 gspread = "*"
 oauth2client = "*"
+tenacity = "*"
+psutil = "*"
 
 [dev-packages]
 

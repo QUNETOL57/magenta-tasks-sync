@@ -1,8 +1,10 @@
+from typing import Optional
+
 class TaskDTO:
     def __init__(self, **kwargs):
         self.id = kwargs.get("id")
         self.key = kwargs.get("key")
-        self._summary = kwargs.get("summary")
+        self._summary = kwargs.get("summary", "")  # Значение по умолчанию
         self.stage_deadline = kwargs.get("stageDeadline")
         self.type = kwargs.get("type")
         self.assignee = kwargs.get("assignee")
@@ -26,7 +28,10 @@ class TaskDTO:
 
     @property
     def summary(self):
-        return self._summary.replace('"', '')
+        # Безопасная обработка None значений
+        if self._summary is None:
+            return ""
+        return str(self._summary).replace('"', '')
 
     @property
     def hyperlink(self) -> str:
