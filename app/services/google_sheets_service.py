@@ -1,15 +1,19 @@
 import logging
 import re
-from typing import Optional
+from datetime import datetime
+
+from typing import Optional, Any
 
 import gspread
 from gspread.utils import ValueInputOption
-from gspread.exceptions import APIError, SpreadsheetNotFound
+from gspread.exceptions import APIError
 
-from app.helpers.list_helper import add_alphabet_keys
+from app.helpers.string_helper import extract_dates
 from app.task_dto import TaskDTO
 from config import config
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+from app.enums.column_enum import ColumnEnum
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -76,6 +80,19 @@ class GoogleSheetsService:
             logger.error(f"Error finding task row: {e}")
             return None
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=8),
+        retry=retry_if_exception_type((APIError, ConnectionError, TimeoutError))
+    )
+    def _get_header(self) -> Optional[list]:
+        self._ensure_connection()
+        try:
+            return self.worksheet.row_values(1)
+        except Exception as e:
+            logger.error(f"Error finding header row: {e}")
+            return None
+
     def store_task(self, task: TaskDTO):
         try:
             self._ensure_connection()
@@ -130,26 +147,65 @@ class GoogleSheetsService:
         self.worksheet.update([task_list], f"A{row}",
                               value_input_option=ValueInputOption.user_entered)
 
-    @staticmethod
-    def mapping(task: TaskDTO, old_task_list=None):
+    def mapping(self, task: TaskDTO, old_task_list=None) -> list[dict[str, Any]]:
+        max_columns_count = 50
         if old_task_list is None:
-            old_task_list = ['' for _ in range(12)]
+            old_task_list = ['' for _ in range(max_columns_count)]
 
         # Убеждаемся, что список достаточно длинный
-        while len(old_task_list) < 12:
+        while len(old_task_list) < max_columns_count:
             old_task_list.append('')
 
-        task_list = add_alphabet_keys(old_task_list)
-        task_list["A"] = task.hyperlink
-        task_list["B"] = task.assignee or ""
-        task_list["C"] = task.type or ""
-        task_list["D"] = task_list.get("D", "")
-        task_list["E"] = task.status or ""
-        task_list["F"] = task.stage_deadline or ""
-        task_list["G"] = task.due_date or ""
-        task_list["H"] = task.priority or ""
-        task_list["I"] = task.off_the_plan
-        task_list["J"] = task.moving_next_sprint
-        task_list["L"] = task.sp_development or ""
+        old_task_list = self.add_columns_keys(old_task_list)
+        task_list = self.add_columns_keys(['' for _ in range(max_columns_count)])
+
+        sprint = self.is_current_date_in_sprint(task.sprint)
+
+        task_list[ColumnEnum.name.value] = task.hyperlink
+        task_list[ColumnEnum.assignee.value] = task.assignee
+        task_list[ColumnEnum.type.value] = task.type or ""
+        task_list[ColumnEnum.sprint.value] = sprint
+        task_list[ColumnEnum.status.value] = task.status or ""
+        task_list[ColumnEnum.stage_deadline.value] = task.stage_deadline or ""
+        task_list[ColumnEnum.due_date.value] = task.due_date or ""
+        task_list[ColumnEnum.deadline_fact.value] = task.deadline_fact or ""
+        task_list[ColumnEnum.project.value] = task.project or ""
+        task_list[ColumnEnum.priority.value] = task.priority or ""
+        task_list[ColumnEnum.off_the_plan.value] = task.off_the_plan
+        task_list[ColumnEnum.outside_of_the_sprint_plan.value] = task.outside_sprint
+        task_list[ColumnEnum.moving_on_to_the_next_sprint.value] = task.moving_next_sprint
+        task_list[ColumnEnum.comment.value] = old_task_list[ColumnEnum.comment.value] or ""
+
+        if task.dev != "" and task.sp_development != "":
+            task_list[task.dev] = task.sp_development
+
+        if task.qa_engineer != "" and task.sp_testing != "":
+            task_list[task.qa_engineer] = task.sp_testing
 
         return list(task_list.values())
+
+    def add_columns_keys(self, data: list[Any]) -> dict[str, Any]:
+        headers = self._get_header()
+        # Ищем ключ, который начинается с "Текущий спринт"
+        sprint_index = next(
+            (i for i, header in enumerate(headers) if header.startswith("Текущий спринт")),
+            None  # если не найдено
+        )
+        headers[sprint_index] = "Текущий спринт"
+
+        result = {}
+        for i, value in enumerate(data):
+            key = headers[i] if i < len(headers) else str(i)
+            result[key] = value
+        return result
+
+    def is_current_date_in_sprint(self, sprint: str) -> bool:
+        dates = extract_dates(sprint)
+        if not dates:
+            return False
+
+        start_date, end_date = dates
+        today = datetime.now().date()
+        return start_date <= today <= end_date
+
+
