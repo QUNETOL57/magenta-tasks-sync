@@ -16,8 +16,8 @@ max_requests_jitter = 100  # Добавляем случайность
 worker_tmp_dir = "/dev/shm"  # Используем RAM для временных файлов
 
 # Логирование
-accesslog = "app.log"
-errorlog = "error.log"
+accesslog = "logs/app.log"
+errorlog = "logs/error.log"
 loglevel = "info"
 access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s" %(D)s'
 

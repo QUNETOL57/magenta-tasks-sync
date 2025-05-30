@@ -11,6 +11,7 @@ gspread = "*"
 oauth2client = "*"
 tenacity = "*"
 psutil = "*"
+pyyaml = "*"
 
 [dev-packages]
 
