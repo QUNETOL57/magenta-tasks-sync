@@ -34,6 +34,7 @@ class TaskDTO:
 
     def _load_mapping_assignee(self):
         """Загружает маппинги из YAML файла"""
+        # TODO обработать ошибку табуляции в файле YAML
         try:
             with open('mapping.yaml', 'r', encoding='utf-8') as file:
                 data = yaml.safe_load(file)
