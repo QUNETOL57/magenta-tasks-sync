@@ -1,4 +1,3 @@
-import logging
 import re
 from datetime import datetime
 
@@ -14,16 +13,15 @@ from config import config
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.enums.column_enum import ColumnEnum
-
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from logging_config import logger
 
 
 class GoogleSheetsService:
     def __init__(self):
+        self.task_key = None
         self.sheet = None
         self.worksheet = None
+        self.header = None
         self._initialize_connection()
 
     @retry(
@@ -36,6 +34,7 @@ class GoogleSheetsService:
             gc = gspread.service_account(filename='credentials/google.json')
             self.sheet = gc.open_by_key(config.get('GOOGLE_SHEET_KEY'))
             self.worksheet = self.sheet.worksheet(config.get('GOOGLE_SHEET_WORKSHEET'))
+            self.header = self._get_header()
             logger.info("Google Sheets connection initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Google Sheets connection: {e}")
@@ -54,13 +53,13 @@ class GoogleSheetsService:
     def _find_first_empty_row(self) -> int:
         self._ensure_connection()
         try:
-            col_values = self.worksheet.col_values(1)
-            for line_number, value in enumerate(col_values, start=1):
-                if not value and line_number != 2:
+            col_values = self.worksheet.col_values(1)  # Получаем значения первого столбца
+            for line_number, value in enumerate(col_values, start=2):
+                if not value:
                     return line_number
             return len(col_values) + 1
         except Exception as e:
-            logger.error(f"Error finding empty row: {e}")
+            logger.error(f"{self.task_key} | Error finding empty row: {e}")
             raise
 
     @retry(
@@ -77,7 +76,7 @@ class GoogleSheetsService:
                 return cell.row
             return None
         except Exception as e:
-            logger.error(f"Error finding task row: {e}")
+            logger.error(f"{self.task_key} | Error finding task row: {e}")
             return None
 
     @retry(
@@ -88,30 +87,116 @@ class GoogleSheetsService:
     def _get_header(self) -> Optional[list]:
         self._ensure_connection()
         try:
-            return self.worksheet.row_values(1)
+            headers = self.worksheet.row_values(1)
+            # Ищем ключ, который начинается с "Текущий спринт" значение может быть "Текущий спринт (461/1804)"
+            # Для того, что бы взять его индекс и заменить на "Текущий спринт"
+            sprint_index = next(
+                (i for i, header in enumerate(headers) if header.startswith("Текущий спринт")),
+                None  # если не найдено
+            )
+            headers[sprint_index] = "Текущий спринт"
+            return headers
         except Exception as e:
-            logger.error(f"Error finding header row: {e}")
+            logger.error(f"{self.task_key} | Error finding header row: {e}")
             return None
 
     def store_task(self, task: TaskDTO):
+        """
+        Обычное сохранение задачи в Google Sheets.
+        """
         try:
+            self.task_key = task.key
             self._ensure_connection()
             row = self._find_task_row_by_prefix(task.key)
             if row is not None:
                 self.update_task(task, row)
-                logger.info(f"Updated task {task.key} at row {row}")
+                logger.info(f"{self.task_key} | Updated task {task.key} at row {row}")
             else:
                 self.create_task(task)
-                logger.info(f"Created new task {task.key}")
+                logger.info(f"{self.task_key} | Created new task {task.key}")
         except APIError as e:
-            logger.error(f"Google Sheets API Error: {e}")
+            logger.error(f"{self.task_key} | Google Sheets API Error: {e}")
             # Переинициализация соединения при API ошибке
             self.sheet = None
             self.worksheet = None
             raise
         except Exception as e:
-            logger.error(f"Unexpected error storing task: {e}")
+            logger.error(f"{self.task_key} | Unexpected error storing task: {e}")
             raise
+
+    def store_tasks_batch(self, tasks: list[TaskDTO]):
+        """
+        Пакетное сохранение задач в Google Sheets.
+        Обновляет существующие задачи и добавляет новые за одну операцию.
+        """
+        self._ensure_connection()
+        # Получаем все значения первого столбца (ключи задач)
+        all_keys = self.worksheet.col_values(1)
+        # Сопоставляем ключ -> номер строки
+        key_to_row = {}
+        # Ставим start=1, чтобы строки начинались с 1 (в google sheets строки начинаются с 1)
+        for idx, value in enumerate(all_keys, start=1):
+            if value:
+                prefix = value.split(":")[0]
+                key_to_row[prefix] = idx
+
+        # Готовим данные для обновления и создания
+        updates = []
+        creates = []
+        for task in tasks:
+            row = key_to_row.get(task.key)
+            if row:
+                try:
+                    old_task_list = self.worksheet.get(f"A{row}:AM{row}")[0]
+                except Exception:
+                    old_task_list = ['' for _ in range(50)]
+                task_list = self.mapping(task, old_task_list)
+                updates.append((task.key, row, task_list))
+            else:
+                creates.append((task.key, task))
+
+        # Пакетное обновление существующих задач
+        if updates:
+            self._batch_update_rows(updates)
+
+        # Пакетное создание новых задач (в конец таблицы)
+        if creates:
+            first_empty_row = len(all_keys) + 1
+            self._batch_create_rows(creates, first_empty_row)
+
+    def _batch_create_rows(self, creates: list[tuple[str, TaskDTO]], first_empty_row: int):
+        """
+        Пакетное добавление строк в Google Sheets.
+        creates: список кортежей (task_key, task_dto)
+        """
+
+        create_rows = []
+        for task_key, task in creates:
+            task_list = self.mapping(task)
+            create_rows.append(task_list)
+        self.worksheet.update(f"A{first_empty_row}", create_rows, value_input_option=ValueInputOption.user_entered)
+
+        row = first_empty_row
+        for task_key, _ in creates:
+            logger.info(f"{task_key} | Created new task {task_key} at row {row}" )
+            row += 1
+
+    def _batch_update_rows(self, updates: list[tuple[str, int, list]]):
+        """
+        Пакетное обновление строк в Google Sheets.
+        updates: список кортежей (task_key, row_number, values_list)
+        """
+        requests = []
+        for _, row, values in updates:
+            range_a1 = f"A{row}"
+            requests.append({
+                "range": range_a1,
+                "values": [values]
+            })
+        self.worksheet.batch_update(requests, value_input_option=ValueInputOption.user_entered)
+
+        for task_key, row, _ in updates:
+            logger.info(f"{task_key} | Updated task {task_key} at row {row}")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -135,7 +220,7 @@ class GoogleSheetsService:
         if row is None:
             row = self._find_task_row_by_prefix(task.key)
             if row is None:
-                raise ValueError(f"Task {task.key} not found")
+                raise ValueError(f"{self.task_key} | Task {task.key} not found")
 
         try:
             old_task_list = self.worksheet.get(f"A{row}:AM{row}")[0]
@@ -185,21 +270,14 @@ class GoogleSheetsService:
         return list(task_list.values())
 
     def add_columns_keys(self, data: list[Any]) -> dict[str, Any]:
-        headers = self._get_header()
-        # Ищем ключ, который начинается с "Текущий спринт"
-        sprint_index = next(
-            (i for i, header in enumerate(headers) if header.startswith("Текущий спринт")),
-            None  # если не найдено
-        )
-        headers[sprint_index] = "Текущий спринт"
-
         result = {}
         for i, value in enumerate(data):
-            key = headers[i] if i < len(headers) else str(i)
+            key = self.header[i] if i < len(self.header) else str(i)
             result[key] = value
         return result
 
-    def is_current_date_in_sprint(self, sprint: str) -> bool:
+    @staticmethod
+    def is_current_date_in_sprint(sprint: str) -> bool:
         dates = extract_dates(sprint)
         if not dates:
             return False
@@ -207,5 +285,3 @@ class GoogleSheetsService:
         start_date, end_date = dates
         today = datetime.now().date()
         return start_date <= today <= end_date
-
-
