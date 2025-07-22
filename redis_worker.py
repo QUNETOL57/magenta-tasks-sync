@@ -39,7 +39,7 @@ def process_queue():
                     tasks.append(task)
             service.store_tasks_batch(tasks)
 
-        time.sleep(5)  # Пауза между итерациями
+        time.sleep(10)  # Пауза между итерациями
 
 if __name__ == '__main__':
     process_queue()
