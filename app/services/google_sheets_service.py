@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-
+import time
 from typing import Optional, Any
 
 import gspread
@@ -22,6 +22,11 @@ class GoogleSheetsService:
         self.sheet = None
         self.worksheet = None
         self.header = None
+        self._cached_keys = None
+        self._cache_timestamp = 0
+        self._cache_duration = 30  # кэш на 30 секунд
+        self._last_request_time = 0
+        self._min_request_interval = 1.0  # минимум 1 секунда между запросами
         self._initialize_connection()
 
     @retry(
@@ -53,7 +58,7 @@ class GoogleSheetsService:
     def _find_first_empty_row(self) -> int:
         self._ensure_connection()
         try:
-            col_values = self.worksheet.col_values(1)  # Получаем значения первого столбца
+            col_values = self._get_cached_keys()  # Получаем значения первого столбца с кэшированием
             for line_number, value in enumerate(col_values, start=2):
                 if not value:
                     return line_number
@@ -70,6 +75,7 @@ class GoogleSheetsService:
     def _find_task_row_by_prefix(self, prefix: str) -> Optional[int]:
         self._ensure_connection()
         try:
+            self._rate_limit()
             pattern = re.compile(f'{prefix}: .+', re.IGNORECASE)
             cell = self.worksheet.find(pattern, in_column=1)
             if cell:
@@ -87,6 +93,7 @@ class GoogleSheetsService:
     def _get_header(self) -> Optional[list]:
         self._ensure_connection()
         try:
+            self._rate_limit()
             headers = self.worksheet.row_values(1)
             # Ищем ключ, который начинается с "Текущий спринт" значение может быть "Текущий спринт (461/1804)"
             # Для того, что бы взять его индекс и заменить на "Текущий спринт"
@@ -130,8 +137,8 @@ class GoogleSheetsService:
         Обновляет существующие задачи и добавляет новые за одну операцию.
         """
         self._ensure_connection()
-        # Получаем все значения первого столбца (ключи задач)
-        all_keys = self.worksheet.col_values(1)
+        # Получаем все значения первого столбца (ключи задач) с кэшированием
+        all_keys = self._get_cached_keys()
         # Сопоставляем ключ -> номер строки
         key_to_row = {}
         # Ставим start=1, чтобы строки начинались с 1 (в google sheets строки начинаются с 1)
@@ -163,6 +170,10 @@ class GoogleSheetsService:
         if creates:
             first_empty_row = len(all_keys) + 1
             self._batch_create_rows(creates, first_empty_row)
+        
+        # Очищаем кэш после успешного обновления, чтобы данные были актуальными
+        if updates or creates:
+            self.clear_cache()
 
     def _batch_create_rows(self, creates: list[tuple[str, TaskDTO]], first_empty_row: int):
         """
@@ -174,6 +185,8 @@ class GoogleSheetsService:
         for task_key, task in creates:
             task_list = self.mapping(task)
             create_rows.append(task_list)
+        
+        self._rate_limit()
         self.worksheet.update(f"A{first_empty_row}", create_rows, value_input_option=ValueInputOption.user_entered)
 
         row = first_empty_row
@@ -193,6 +206,8 @@ class GoogleSheetsService:
                 "range": range_a1,
                 "values": [values]
             })
+        
+        self._rate_limit()
         self.worksheet.batch_update(requests, value_input_option=ValueInputOption.user_entered)
 
         for task_key, row, _ in updates:
@@ -207,6 +222,7 @@ class GoogleSheetsService:
         self._ensure_connection()
         row = self._find_first_empty_row()
         task_list = self.mapping(task)
+        self._rate_limit()
         self.worksheet.update([task_list], f"A{row}",
                               value_input_option=ValueInputOption.user_entered)
 
@@ -223,12 +239,14 @@ class GoogleSheetsService:
                 raise ValueError(f"{self.task_key} | Task {task.key} not found")
 
         try:
+            self._rate_limit()
             old_task_list = self.worksheet.get(f"A{row}:AM{row}")[0]
         except IndexError:
             # Если строка пустая, создаем пустой список
             old_task_list = ['' for _ in range(12)]
 
         task_list = self.mapping(task, old_task_list)
+        self._rate_limit()
         self.worksheet.update([task_list], f"A{row}",
                               value_input_option=ValueInputOption.user_entered)
 
@@ -285,3 +303,32 @@ class GoogleSheetsService:
         start_date, end_date = dates
         today = datetime.now().date()
         return start_date <= today <= end_date
+
+    def _rate_limit(self):
+        """Ограничивает частоту запросов к API"""
+        current_time = time.time()
+        time_since_last_request = current_time - self._last_request_time
+        if time_since_last_request < self._min_request_interval:
+            sleep_time = self._min_request_interval - time_since_last_request
+            logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+            time.sleep(sleep_time)
+        self._last_request_time = time.time()
+
+    def _get_cached_keys(self):
+        """Получает ключи с кэшированием"""
+        current_time = time.time()
+        if (self._cached_keys is None or 
+            current_time - self._cache_timestamp > self._cache_duration):
+            
+            self._rate_limit()
+            self._cached_keys = self.worksheet.col_values(1)
+            self._cache_timestamp = current_time
+            logger.debug("Refreshed cached keys from Google Sheets")
+        
+        return self._cached_keys
+
+    def clear_cache(self):
+        """Очищает кэш ключей"""
+        self._cached_keys = None
+        self._cache_timestamp = 0
+        logger.debug("Cleared cached keys")
